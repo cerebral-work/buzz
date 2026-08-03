@@ -1,0 +1,56 @@
+# cerebral-work fork only — mirrors the relay image into the Cloudflare
+# managed registry for the Cloudflare Containers deployment
+# (unsigned-paas/infrastructure/cloudflare/buzz).
+#
+# WHY A MIRROR: Cloudflare Containers can only pull from
+# registry.cloudflare.com, Docker Hub, ECR, or Google Artifact Registry.
+# ghcr.io (where block/buzz publishes) is NOT a supported source, so the
+# documented path is pull → tag → `wrangler containers push`.
+#
+# Secrets required (repo settings):
+#   CLOUDFLARE_API_TOKEN   — Containers/Workers write scope
+#   CLOUDFLARE_ACCOUNT_ID  — target account
+name: Mirror relay image to Cloudflare registry
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Source image ref to mirror (tag or digest on ghcr.io/block/buzz)"
+        required: true
+        default: "main"
+      target_tag:
+        description: "Tag to push under registry.cloudflare.com/<account>/buzz-relay"
+        required: true
+        default: "main"
+
+permissions: {}
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Pull source image (linux/amd64 — the only arch Containers runs)
+        run: |
+          docker pull --platform linux/amd64 "ghcr.io/block/buzz:${{ inputs.source_ref }}"
+
+      - name: Tag for Cloudflare registry
+        run: |
+          docker tag "ghcr.io/block/buzz:${{ inputs.source_ref }}" \
+            "registry.cloudflare.com/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/buzz-relay:${{ inputs.target_tag }}"
+
+      - name: Push via wrangler
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          npx --yes wrangler@4 containers push \
+            "registry.cloudflare.com/${CLOUDFLARE_ACCOUNT_ID}/buzz-relay:${{ inputs.target_tag }}"
+
+      - name: Emit pushed digest
+        run: |
+          docker inspect --format='{{index .RepoDigests 0}}' \
+            "registry.cloudflare.com/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/buzz-relay:${{ inputs.target_tag }}" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
